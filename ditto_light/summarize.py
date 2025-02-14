@@ -1,6 +1,6 @@
-import numpy as np
-import csv
-import sys
+from typing import cast
+
+import nltk
 import os
 
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -9,7 +9,12 @@ from nltk.corpus import stopwords
 
 from .dataset import get_tokenizer
 
-stopwords = set(stopwords.words('english'))
+try:
+    stopwords = set(stopwords.words('english'))
+except LookupError:
+    nltk.download('stopwords')
+    stopwords = set(stopwords.words('english'))
+
 
 class Summarizer:
     """To summarize a data entry pair into length up to the max sequence length.
@@ -23,6 +28,8 @@ class Summarizer:
         tokenizer (Tokenizer): a tokenizer from the huggingface library
     """
     def __init__(self, task_config, lm):
+        self.idf = None
+        self.vocab = None
         self.config = task_config
         self.tokenizer = get_tokenizer(lm=lm)
         self.len_cache = {}
@@ -47,7 +54,7 @@ class Summarizer:
                         for entry in LL:
                             content.append(entry)
 
-        vectorizer = TfidfVectorizer().fit(content)
+        vectorizer = cast(TfidfVectorizer, TfidfVectorizer().fit(content))
         self.vocab = vectorizer.vocabulary_
         self.idf = vectorizer.idf_
 
@@ -100,7 +107,6 @@ class Summarizer:
                 total_len += bert_len
                 topk_tokens_copy.add(word)
 
-            num_tokens = 0
             for token in sent.split(' '):
                 if token in ['COL', 'VAL']:
                     res += token + ' '

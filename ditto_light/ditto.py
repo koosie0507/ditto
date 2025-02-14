@@ -1,19 +1,13 @@
 import os
-import sys
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-import random
 import numpy as np
 import sklearn.metrics as metrics
-import argparse
 
 from .dataset import DittoDataset
 from torch.utils import data
 from transformers import AutoModel, AdamW, get_linear_schedule_with_warmup
 from tensorboardX import SummaryWriter
-from apex import amp
 
 lm_mp = {'roberta': 'roberta-base',
          'distilbert': 'distilbert-base-uncased'}
@@ -33,7 +27,8 @@ class DittoModel(nn.Module):
 
         # linear layer
         hidden_size = self.bert.config.hidden_size
-        self.fc = torch.nn.Linear(hidden_size, 2)
+        self.bert.to(device)
+        self.fc = torch.nn.Linear(hidden_size, 2).to(device)
 
 
     def forward(self, x1, x2=None):
@@ -76,12 +71,11 @@ def evaluate(model, iterator, threshold=None):
         float (optional): if threshold is not provided, the threshold
             value that gives the optimal F1
     """
-    all_p = []
     all_y = []
     all_probs = []
     with torch.no_grad():
         for batch in iterator:
-            x, y = batch
+            x, y = tuple(vec.to(model.device) for vec in batch)
             logits = model(x)
             probs = logits.softmax(dim=1)[:, 1]
             all_probs += probs.cpu().numpy().tolist()
@@ -118,25 +112,21 @@ def train_step(train_iter, model, optimizer, scheduler, hp):
     Returns:
         None
     """
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss().to(model.device)
     # criterion = nn.MSELoss()
     for i, batch in enumerate(train_iter):
         optimizer.zero_grad()
 
         if len(batch) == 2:
             x, y = batch
-            prediction = model(x)
+            prediction = model(x.to(model.device))
         else:
-            x1, x2, y = batch
-            prediction = model(x1, x2)
+            x1, x2, y = batch.to(model.device)
+            prediction = model(x1.to(model.device), x2.to(model.device))
 
         loss = criterion(prediction, y.to(model.device))
 
-        if hp.fp16:
-            with amp.scale_loss(loss, optimizer) as scaled_loss:
-                scaled_loss.backward()
-        else:
-            loss.backward()
+        loss.backward()
         optimizer.step()
         scheduler.step()
         if i % 10 == 0: # monitoring
@@ -177,15 +167,23 @@ def train(trainset, validset, testset, run_tag, hp):
                                  collate_fn=padder)
 
     # initialize model, optimizer, and LR scheduler
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = 'cpu'
+    if torch.cuda.is_available():
+        device = 'cuda'
+    elif torch.backends.mps.is_available():
+        device = 'mps'
+    else:
+        if not torch.backends.mps.is_built():
+            print("PyTorch does not support MPS.")
+        else:
+            print("This is not Mac OSX or OS X version too old to use MPS.")
+
     model = DittoModel(device=device,
                        lm=hp.lm,
                        alpha_aug=hp.alpha_aug)
-    model = model.cuda()
+    model.to(device)
     optimizer = AdamW(model.parameters(), lr=hp.lr)
 
-    if hp.fp16:
-        model, optimizer = amp.initialize(model, optimizer, opt_level='O2')
     num_steps = (len(trainset) // hp.batch_size) * hp.n_epochs
     scheduler = get_linear_schedule_with_warmup(optimizer,
                                                 num_warmup_steps=0,

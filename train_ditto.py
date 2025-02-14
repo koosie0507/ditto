@@ -1,9 +1,7 @@
-import os
 import argparse
 import json
 import sys
 import torch
-import numpy as np
 import random
 
 sys.path.insert(0, "Snippext_public")

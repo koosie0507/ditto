@@ -1,21 +1,14 @@
+import nltk
 import torch
-import torch.nn as nn
-import os
-import numpy as np
 import random
 import json
 import jsonlines
-import csv
-import re
 import time
 import argparse
-import sys
 import sklearn
-import traceback
 
 from torch.utils import data
 from tqdm import tqdm
-from apex import amp
 from scipy.special import softmax
 
 from ditto_light.ditto import evaluate, DittoModel
@@ -254,7 +247,7 @@ def tune_threshold(config, model, hp):
 
 
 
-def load_model(task, path, lm, use_gpu, fp16=True):
+def load_model(task, path, lm, use_gpu):
     """Load a model for a specific task.
 
     Args:
@@ -262,7 +255,6 @@ def load_model(task, path, lm, use_gpu, fp16=True):
         path (str): the path of the checkpoint directory
         lm (str): the language model
         use_gpu (boolean): whether to use gpu
-        fp16 (boolean, optional): whether to use fp16
 
     Returns:
         Dictionary: the task config
@@ -275,34 +267,38 @@ def load_model(task, path, lm, use_gpu, fp16=True):
 
     configs = json.load(open('configs.json'))
     configs = {conf['name'] : conf for conf in configs}
-    config = configs[task]
-    config_list = [config]
+    cfg = configs[task]
 
+    device = 'cpu'
     if use_gpu:
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    else:
-        device = 'cpu'
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            device = 'cuda'
+        elif torch.backends.mps.is_available():
+            device = 'mps'
+        else:
+            if not torch.backends.mps.is_built():
+                print("PyTorch does not support MPS.")
+            else:
+                print("CUDA not available and Mac OSX does not support MPS.")
 
-    model = DittoModel(device=device, lm=lm)
+    ditto = DittoModel(device=device, lm=lm)
 
     saved_state = torch.load(checkpoint, map_location=lambda storage, loc: storage)
-    model.load_state_dict(saved_state['model'])
-    model = model.to(device)
+    ditto.load_state_dict(saved_state['model'])
+    ditto = ditto.to(device)
 
-    if fp16 and 'cuda' in device:
-        model = amp.initialize(model, opt_level='O2')
-
-    return config, model
+    return cfg, ditto
 
 
 if __name__ == "__main__":
+    nltk.download("stopwords", quiet=True)
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", type=str, default='Structured/Beer')
-    parser.add_argument("--input_path", type=str, default='input/candidates_small.jsonl')
-    parser.add_argument("--output_path", type=str, default='output/matched_small.jsonl')
+    parser.add_argument("--input_path", type=str, default='input/input_small.jsonl')
+    parser.add_argument("--output_path", type=str, default='output/output_small.jsonl')
     parser.add_argument("--lm", type=str, default='distilbert')
     parser.add_argument("--use_gpu", dest="use_gpu", action="store_true")
-    parser.add_argument("--fp16", dest="fp16", action="store_true")
     parser.add_argument("--checkpoint_path", type=str, default='checkpoints/')
     parser.add_argument("--dk", type=str, default=None)
     parser.add_argument("--summarize", dest="summarize", action="store_true")
@@ -311,8 +307,7 @@ if __name__ == "__main__":
 
     # load the models
     set_seed(123)
-    config, model = load_model(hp.task, hp.checkpoint_path,
-                       hp.lm, hp.use_gpu, hp.fp16)
+    config, model = load_model(hp.task, hp.checkpoint_path, hp.lm, hp.use_gpu)
 
     summarizer = dk_injector = None
     if hp.summarize:
